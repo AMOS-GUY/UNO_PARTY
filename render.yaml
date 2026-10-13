@@ -1,0 +1,14 @@
+# One-click Render deploy for UNO Party.
+# Render terminates TLS in front of the service and proxies WebSocket
+# upgrades, so HTTPS/WSS works with no extra config.
+services:
+  - type: web
+    name: uno-party
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # CLIENT_ORIGIN is only needed if you serve the client from a
+      # different origin; same-origin deploys (this Dockerfile) don't need it.
