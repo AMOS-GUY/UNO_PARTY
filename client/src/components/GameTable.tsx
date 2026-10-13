@@ -10,6 +10,7 @@ import { UnoButton } from './UnoButton';
 import { ReactionBar } from './ReactionBar';
 import { RuleBadges } from './RuleBadges';
 import { SpectatorView } from './SpectatorView';
+import { ChatToggle } from './ChatPanel';
 
 export function GameTable() {
   const { gameState, unoBanner, pushToast, leaveAndReset, connected } = useGame();
@@ -70,6 +71,7 @@ export function GameTable() {
           {gameState.deckCount} deck{gameState.deckCount > 1 ? 's' : ''}
         </span>
         <div className="flex items-center gap-2">
+          <ChatToggle />
           <button
             type="button"
             onClick={toggleMute}

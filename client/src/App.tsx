@@ -2,6 +2,7 @@ import { GameProvider, useGame } from './hooks/useGame';
 import { Lobby } from './components/Lobby';
 import { GameTable } from './components/GameTable';
 import { WinnerScreen } from './components/WinnerScreen';
+import { ChatPanel } from './components/ChatPanel';
 import { Toasts } from './components/Toasts';
 
 function Root() {
@@ -12,6 +13,7 @@ function Root() {
   return (
     <div className="h-full">
       {inGame ? <GameTable /> : <Lobby />}
+      {inRoom && <ChatPanel />}
       {gameOver && <WinnerScreen />}
       <Toasts />
     </div>

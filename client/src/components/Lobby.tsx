@@ -4,6 +4,7 @@ import { api, loadSession, saveSession, socket } from '../lib/socket';
 import type { HouseRules } from '../shared/protocol';
 import { PlayerAvatar } from './PlayerAvatar';
 import { RuleBadges } from './RuleBadges';
+import { ChatToggle } from './ChatPanel';
 
 const RULE_OPTIONS: { key: keyof HouseRules; label: string; hint: string }[] = [
   { key: 'stacking', label: '+2/+4 Stacking', hint: 'Stack draw cards and pass the penalty along' },
@@ -219,6 +220,9 @@ function LobbyRoom() {
 
   return (
     <div className="flex min-h-full flex-col items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-green-800 via-green-950 to-black p-6">
+      <div className="fixed right-3 top-3 z-10">
+        <ChatToggle />
+      </div>
       <div className="w-full max-w-md rounded-3xl bg-white/5 p-6 shadow-2xl backdrop-blur border border-white/10">
         <p className="text-center text-sm font-semibold text-white/60">Room code</p>
         <button

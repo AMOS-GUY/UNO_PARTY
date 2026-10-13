@@ -3,8 +3,8 @@
  * bind sockets to players and translate results into events.
  */
 import { randomBytes, randomInt } from 'node:crypto';
-import type { HouseRules, RoomPhase } from '../shared/protocol.js';
-import { DEFAULT_RULES, MAX_PLAYERS } from '../shared/protocol.js';
+import type { ChatMessage, HouseRules, RoomPhase } from '../shared/protocol.js';
+import { CHAT_HISTORY_SIZE, CHAT_MAX_LENGTH, DEFAULT_RULES, MAX_PLAYERS } from '../shared/protocol.js';
 import type { GameState } from './engine.js';
 
 export interface RoomPlayer {
@@ -23,6 +23,7 @@ export interface Room {
   deckCount: number; // set at game start: ceil(players / 4)
   game: GameState | null;
   rules: HouseRules; // house-rule config, editable in the lobby by the host
+  chat: ChatMessage[]; // ephemeral: last CHAT_HISTORY_SIZE messages, dies with the room
 }
 
 /** Unambiguous alphabet: no 0/O/1/I. */
@@ -118,6 +119,7 @@ export function createRoom(
     deckCount: 1,
     game: null,
     rules: sanitizeRules(rulesRaw),
+    chat: [],
   };
   const player: RoomPlayer = {
     id: newPlayerId(),
@@ -243,4 +245,46 @@ export function updateRules(room: Room, player: RoomPlayer, rulesRaw: unknown): 
 /** deckCount per the protocol: ceil(playerCount / 4). */
 export function computeDeckCount(playerCount: number): number {
   return Math.max(1, Math.ceil(playerCount / 4));
+}
+
+// ---- Chat ----
+
+/** Plain-text sanitize: strip control chars, collapse nothing else, trim, cap length. */
+export function sanitizeChatText(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  const text = raw.replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, CHAT_MAX_LENGTH);
+  return text.length > 0 ? text : null;
+}
+
+/** Append a player chat message to the room history. */
+export function addChatMessage(room: Room, player: RoomPlayer, text: string): ChatMessage {
+  const msg: ChatMessage = {
+    id: randomBytes(6).toString('hex'),
+    playerId: player.id,
+    playerName: player.name,
+    avatar: player.avatar,
+    text,
+    ts: Date.now(),
+    kind: 'player',
+  };
+  room.chat.push(msg);
+  if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE);
+  return msg;
+}
+
+/** Append a system message (joined/left/started/finished/game over). */
+export function addSystemMessage(room: Room, text: string): ChatMessage {
+  const msg: ChatMessage = {
+    id: randomBytes(6).toString('hex'),
+    playerId: null,
+    playerName: 'UNO Party',
+    avatar: '',
+    text,
+    ts: Date.now(),
+    kind: 'system',
+  };
+  room.chat.push(msg);
+  if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE);
+  return msg;
 }

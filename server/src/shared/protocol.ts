@@ -161,6 +161,25 @@ export interface PlayerPresencePayload {
   connected: boolean;
 }
 
+// ---- Chat ----
+
+export interface ChatSendPayload {
+  text: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  playerId: string | null; // null for system messages
+  playerName: string;
+  avatar: string;
+  text: string; // plain text, sanitized server-side
+  ts: number; // epoch ms
+  kind: 'player' | 'system';
+}
+
+export const CHAT_MAX_LENGTH = 200;
+export const CHAT_HISTORY_SIZE = 50;
+
 /** The five allowed chat reactions. */
 export const ALLOWED_REACTIONS = ['😂', '😮', '😭', '🔥', '👏'] as const;
 export type ReactionEmoji = (typeof ALLOWED_REACTIONS)[number];

@@ -136,4 +136,22 @@ export interface PlayerPresenceEvent {
   connected: boolean;
 }
 
+// ---- Chat ----
+
+export interface ChatSendPayload {
+  text: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  playerId: string | null; // null for system messages
+  playerName: string;
+  avatar: string;
+  text: string; // plain text, sanitized server-side
+  ts: number; // epoch ms
+  kind: 'player' | 'system';
+}
+
+export const CHAT_MAX_LENGTH = 200;
+
 export const REACTION_EMOJIS = ['😂', '😮', '😭', '🔥', '👏'] as const;

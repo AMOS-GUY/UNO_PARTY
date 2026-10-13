@@ -140,14 +140,14 @@ function emitEffects(io: Server, room: Room, effects: Effect[]): void {
       case 'unoCaught':
         io.to(room.code).emit('unoCaught', { targetId: e.targetId, catcherId: e.catcherId });
         break;
-      case 'playerFinished':
-        // No dedicated wire event — placements ride on gameState. An info
-        // toast announces the finish to the table.
-        io.to(room.code).emit('toast', {
-          kind: 'info',
-          message: `${playerName(room, e.playerId)} finished #${e.place} 🏆`,
-        });
+      case 'playerFinished': {
+        // Placements ride on gameState; a toast + chat system message
+        // announce the finish to the table.
+        const text = `${playerName(room, e.playerId)} finished #${e.place} 🏆`;
+        io.to(room.code).emit('toast', { kind: 'info', message: text });
+        io.to(room.code).emit('chat:message', rooms.addSystemMessage(room, text));
         break;
+      }
       case 'gameOver': {
         room.phase = 'finished';
         const placements = room.players
@@ -157,6 +157,7 @@ function emitEffects(io: Server, room: Room, effects: Effect[]): void {
             place: room.game?.players.find((ep) => ep.id === p.id)?.place ?? 0,
           }))
           .sort((a, b) => a.place - b.place);
+        io.to(room.code).emit('chat:message', rooms.addSystemMessage(room, `Game over! ${playerName(room, e.winnerId)} takes 1st place 🎉`));
         io.to(room.code).emit('gameOver', {
           winnerId: e.winnerId,
           winnerName: playerName(room, e.winnerId),
@@ -216,6 +217,8 @@ export function registerHandlers(io: Server): void {
     const settle = (room: Room, player: RoomPlayer, cb?: AckCallback) => {
       void socket.join(room.code);
       ackOk(cb, { roomCode: room.code, playerId: player.id });
+      // Replay recent chat history to this socket only (ephemeral context).
+      if (room.chat.length > 0) socket.emit('chat:history', { messages: room.chat });
       broadcastState(io, room);
     };
 
@@ -232,6 +235,8 @@ export function registerHandlers(io: Server): void {
         if (!limits.general.tryConsume()) return ackErr(cb, 'Rate limited — slow down');
         const result = rooms.joinRoom(payload?.roomCode, payload?.name, socket.id);
         if ('error' in result) return ackErr(cb, result.error);
+        const sys = rooms.addSystemMessage(result.room, `${result.player.name} joined the room 👋`);
+        io.to(result.room.code).emit('chat:message', sys);
         settle(result.room, result.player, cb);
       },
     );
@@ -285,6 +290,8 @@ export function registerHandlers(io: Server): void {
       );
       room.game = state;
       room.phase = 'playing';
+      const sys = rooms.addSystemMessage(room, 'The game has started! 🎮');
+      io.to(room.code).emit('chat:message', sys);
       ackOk(cb);
       emitEffects(io, room, effects);
       broadcastState(io, room);
@@ -376,6 +383,19 @@ export function registerHandlers(io: Server): void {
       broadcastState(io, room);
     });
 
+    // Chat: room-scoped (lobby and game). Excess rate → silently dropped
+    // (ack still ok:true, nothing broadcast).
+    socket.on('chat:send', (payload: { text?: unknown }, cb?: AckCallback) => {
+      const ctx = rooms.lookupSocket(socket.id);
+      if (!ctx) return ackErr(cb, 'You are not in a room');
+      const text = rooms.sanitizeChatText(payload?.text);
+      if (!text) return ackErr(cb, 'Message cannot be empty');
+      if (!limits.chat.tryConsume()) return ackOk(cb); // silently dropped
+      const msg = rooms.addChatMessage(ctx.room, ctx.player, text);
+      io.to(ctx.room.code).emit('chat:message', msg);
+      ackOk(cb);
+    });
+
     socket.on('leaveRoom', (_payload: unknown, cb?: AckCallback) => {
       if (!limits.general.tryConsume()) return ackErr(cb, 'Rate limited — slow down');
       const ctx = rooms.lookupSocket(socket.id);
@@ -386,6 +406,7 @@ export function registerHandlers(io: Server): void {
       const result = rooms.leaveRoom(room, player);
       ackOk(cb);
       if ('error' in result || result.kind === 'roomClosed') return;
+      io.to(room.code).emit('chat:message', rooms.addSystemMessage(room, `${player.name} left the room 👋`));
       if (result.kind === 'markedAway' && room.game) {
         engine.handleDisconnect(room.game, player.id);
         io.to(room.code).emit('playerPresence', { playerId: player.id, connected: false });

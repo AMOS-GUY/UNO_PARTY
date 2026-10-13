@@ -30,4 +30,5 @@ export class RateLimiter {
 export class SocketRateLimits {
   readonly general = new RateLimiter(20, 10);
   readonly reaction = new RateLimiter(1, 1);
+  readonly chat = new RateLimiter(5, 1); // ~5 messages per 5s per player
 }

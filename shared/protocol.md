@@ -93,7 +93,31 @@ All mutating events take an ack callback `(res: Ack) => void` where
 | `callUno` | `{}` | Caller must have exactly 1 card and a pending UNO window. |
 | `catchPlayer` | `{ targetId: string }` | Anyone except target; valid only after `unoPending.deadline` passed. Target draws 2 penalty cards. |
 | `sendReaction` | `{ emoji: string }` | One of `😂 😮 😭 🔥 👏`. Rate limited. |
+| `chat:send` | `{ text: string }` | Room-scoped (lobby + game). Trimmed, max 200 chars, empty rejected with `{ok:false}`. Rate limited ~5 msgs / 5s — excess **silently dropped** (no ack error, no broadcast; ack still `{ok:true}`). |
 | `leaveRoom` | `{}` | Leaves cleanly; in lobby removes seat, mid-game marks disconnected. |
+
+### Chat messages
+
+```ts
+interface ChatMessage {
+  id: string;          // random per message
+  playerId: string | null; // null for system messages
+  playerName: string;  // 'UNO Party' for system messages
+  avatar: string;      // '' for system messages
+  text: string;        // plain text, pre-sanitized server-side
+  ts: number;          // epoch ms
+  kind: 'player' | 'system';
+}
+```
+
+Server → client: `chat:message` with a `ChatMessage` (live messages). History
+is ephemeral: the last 50 messages per room are kept in memory and sent to a
+joining/rejoining socket as a single `chat:history` event
+(`{ messages: ChatMessage[] }`) — history arrives as one batch so clients can
+render it without unread badges or sound effects. Nothing is persisted;
+history dies with the room. System messages (`kind: 'system'`) are broadcast
+for: player joined, player left, game started, player finished in place N,
+game over. Clients render chat text as text only, never HTML.
 
 ## Server → Client events
 

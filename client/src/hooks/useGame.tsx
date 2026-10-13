@@ -10,6 +10,7 @@ import {
 import type {
   CardPlayedEvent,
   CardDrawnEvent,
+  ChatMessage,
   Color,
   EmojiEffectEvent,
   GameOverEvent,
@@ -59,6 +60,10 @@ interface GameContextValue {
   /** card currently shaking after a rejected play */
   shakingCardId: string | null;
   pushToast: (kind: ToastEvent['kind'], message: string) => void;
+  chatMessages: ChatMessage[];
+  unreadChat: number;
+  chatOpen: boolean;
+  setChatOpen: (open: boolean) => void;
   playCard: (
     cardId: string,
     chosenColor?: Color,
@@ -82,6 +87,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [flyingCard, setFlyingCard] = useState<FlyingCard | null>(null);
   const [drawnPulse, setDrawnPulse] = useState<GameContextValue['drawnPulse']>(null);
   const [shakingCardId, setShakingCardId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [unreadChat, setUnreadChat] = useState(0);
+  const [chatOpen, setChatOpenState] = useState(false);
+
+  const chatOpenRef = useRef(false);
 
   const lastAttemptedCardId = useRef<string | null>(null);
   const roomCodeRef = useRef<string | null>(null);
@@ -104,6 +114,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
     if (shakeTimer.current) clearTimeout(shakeTimer.current);
     setShakingCardId(cardId);
     shakeTimer.current = setTimeout(() => setShakingCardId(null), 600);
+  }, []);
+
+  const setChatOpen = useCallback((open: boolean) => {
+    chatOpenRef.current = open;
+    setChatOpenState(open);
+    if (open) setUnreadChat(0);
   }, []);
 
   useEffect(() => {
@@ -183,6 +199,24 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const onPresence = (_e: PlayerPresenceEvent) => {
       // gameState follows every state change; presence is also reflected there.
     };
+    const onChatMessage = (msg: ChatMessage) => {
+      setChatMessages((prev) =>
+        prev.some((m) => m.id === msg.id) ? prev : [...prev.slice(-49), msg],
+      );
+      const isMine = msg.playerId !== null && msg.playerId === gameStateRef.current?.myPlayerId;
+      if (!chatOpenRef.current && !isMine) {
+        setUnreadChat((n) => n + 1);
+        playSound('pop');
+      }
+    };
+    const onChatHistory = ({ messages }: { messages: ChatMessage[] }) => {
+      // History replay: merge silently — no unread badge, no pop sounds.
+      setChatMessages((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        const merged = [...messages.filter((m) => !seen.has(m.id)), ...prev];
+        return merged.slice(-50);
+      });
+    };
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -195,6 +229,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
     socket.on('unoCaught', onUnoCaught);
     socket.on('gameOver', onGameOver);
     socket.on('playerPresence', onPresence);
+    socket.on('chat:message', onChatMessage);
+    socket.on('chat:history', onChatHistory);
 
     // Cold-load rejoin: ?room=CODE deep link or prior session restored by App.
     if (socket.connected) onConnect();
@@ -211,6 +247,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
       socket.off('unoCaught', onUnoCaught);
       socket.off('gameOver', onGameOver);
       socket.off('playerPresence', onPresence);
+      socket.off('chat:message', onChatMessage);
+      socket.off('chat:history', onChatHistory);
     };
   }, [pushToast, shakeCard]);
 
@@ -250,7 +288,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
     setUnoBanner(null);
     setEffects({});
     setFlyingCard(null);
-  }, []);
+    setChatMessages([]);
+    setUnreadChat(0);
+    setChatOpen(false);
+  }, [setChatOpen]);
 
   // Persist session whenever we learn our identity in a room.
   useEffect(() => {
@@ -274,6 +315,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
     drawnPulse,
     shakingCardId,
     pushToast,
+    chatMessages,
+    unreadChat,
+    chatOpen,
+    setChatOpen,
     playCard,
     leaveAndReset,
   };

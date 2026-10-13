@@ -2,6 +2,7 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   Ack,
   CatchPlayerPayload,
+  ChatSendPayload,
   CreateRoomPayload,
   HouseRules,
   JoinAckData,
@@ -71,6 +72,8 @@ export const api = {
     emitAck('catchPlayer', { targetId } satisfies CatchPlayerPayload),
   sendReaction: (emoji: string) =>
     emitAck('sendReaction', { emoji } satisfies SendReactionPayload),
+  sendChat: (text: string) =>
+    emitAck('chat:send', { text } satisfies ChatSendPayload),
   leaveRoom: () => emitAck('leaveRoom'),
 };
 

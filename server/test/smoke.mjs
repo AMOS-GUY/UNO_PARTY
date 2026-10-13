@@ -348,6 +348,11 @@ async function engineTests() {
       1,
       rules,
     );
+    // Normalize the random initial flip (skip/reverse/draw2 apply effects at
+    // deal time) so every test block starts from a deterministic baseline.
+    state.direction = 1;
+    state.currentIndex = 0;
+    state.drawStack = null;
     return state;
   };
   const card = (id, color, value) => ({ id, color, value });
@@ -795,9 +800,137 @@ async function engineTests() {
   }
 }
 
+async function chatTests() {
+  console.log('Part 3: chat');
+  const a = await connect();
+  const chatA = [];
+  a.on('chat:message', (m) => chatA.push(m));
+  const created = await emitAck(a, 'createRoom', { name: 'ChatAlice' });
+  assert.equal(created.ok, true);
+  const roomCode = created.roomCode;
+
+  const b = await connect();
+  const chatB = [];
+  b.on('chat:message', (m) => chatB.push(m));
+  let historyB = null;
+  b.on('chat:history', (h) => (historyB = h));
+  const joined = await emitAck(b, 'joinRoom', { roomCode, name: 'ChatBob' });
+  assert.equal(joined.ok, true);
+  const bobId = joined.playerId;
+  await sleep(200);
+
+  check('system message on player join, broadcast to room', () => {
+    const sys = chatA.find((m) => m.kind === 'system' && /joined/.test(m.text));
+    assert.ok(sys, JSON.stringify(chatA));
+    assert.equal(sys.playerId, null);
+  });
+  check('joiner receives chat:history with prior messages', () => {
+    assert.ok(historyB !== null && Array.isArray(historyB.messages));
+  });
+
+  // --- send / broadcast ---
+  const sendAck = await emitAck(a, 'chat:send', { text: '  hello room!  ' });
+  check('chat:send acks ok, text trimmed', () => assert.equal(sendAck.ok, true));
+  await sleep(200);
+  check('chat:message broadcast with full shape', () => {
+    const msg = chatB.find((m) => m.kind === 'player' && m.text === 'hello room!');
+    assert.ok(msg, JSON.stringify(chatB));
+    assert.ok(msg.id && msg.playerId && msg.playerName === 'ChatAlice' && msg.avatar && msg.ts > 0);
+  });
+
+  // --- validation ---
+  const empty = await emitAck(a, 'chat:send', { text: '   ' });
+  check('empty message rejected', () => assert.equal(empty.ok, false));
+  await emitAck(a, 'chat:send', { text: 'x'.repeat(250) });
+  await sleep(200);
+  check('message capped at 200 chars', () => {
+    const long = chatB.find((m) => m.kind === 'player' && m.text.startsWith('xxx'));
+    assert.ok(long);
+    assert.equal(long.text.length, 200);
+  });
+  await emitAck(a, 'chat:send', { text: 'clean\u0000<script>alert(1)</script>' });
+  await sleep(200);
+  check('HTML/JS text passes through as literal plain text (control chars stripped)', () => {
+    const msg = chatB.find((m) => m.text.includes('<script>'));
+    assert.ok(msg, 'message with HTML should be stored literally');
+    assert.equal(msg.text, 'clean<script>alert(1)</script>');
+    assert.ok(!/[\u0000-\u001F]/.test(msg.text));
+  });
+
+  // --- rate limit: ~5 per 5s, excess silently dropped ---
+  const c = await connect();
+  await emitAck(c, 'joinRoom', { roomCode, name: 'ChatCara' });
+  await sleep(200);
+  const baseCount = chatB.length;
+  for (let i = 0; i < 8; i++) await emitAck(c, 'chat:send', { text: `spam ${i}` });
+  await sleep(300);
+  check('rate limit: 5 of 8 rapid messages broadcast, rest silently dropped', () => {
+    const spam = chatB.slice(baseCount).filter((m) => m.kind === 'player' && m.text.startsWith('spam'));
+    assert.equal(spam.length, 5, `got ${spam.length}`);
+  });
+
+  // --- system message on game start + chat works mid-game ---
+  await emitAck(b, 'chat:send', { text: 'ready' });
+  await emitAck(a, 'startGame', {});
+  await sleep(300);
+  check('system message on game start', () => {
+    assert.ok(chatB.some((m) => m.kind === 'system' && /started/i.test(m.text)));
+  });
+  await emitAck(a, 'chat:send', { text: 'mid-game hello' });
+  await sleep(200);
+  check('chat works during the game', () => {
+    assert.ok(chatB.some((m) => m.text === 'mid-game hello'));
+  });
+
+  // --- history replay on rejoin ---
+  b.disconnect();
+  await sleep(200);
+  const b2 = await connect();
+  let historyB2 = null;
+  b2.on('chat:history', (h) => (historyB2 = h));
+  const rejoin = await emitAck(b2, 'rejoinRoom', { roomCode, playerId: bobId, name: 'ChatBob' });
+  assert.equal(rejoin.ok, true, JSON.stringify(rejoin));
+  await sleep(300);
+  check('rejoin replays recent chat history (chat:history)', () => {
+    assert.ok(historyB2, 'no history received');
+    const texts = historyB2.messages.map((m) => m.text);
+    assert.ok(texts.includes('mid-game hello'));
+    assert.ok(historyB2.messages.some((m) => m.kind === 'system' && /started/i.test(m.text)));
+    assert.ok(historyB2.messages.length <= 50);
+  });
+
+  a.disconnect();
+  b2.disconnect();
+  c.disconnect();
+}
+
+async function roomsTests() {
+  console.log('Part 4: rooms-level chat history cap');
+  const rooms = await import('../dist/game/rooms.js');
+  const r = rooms.createRoom('Tester', undefined, 'sock-test');
+  assert.ok(!('error' in r));
+  const { room, player } = r;
+  for (let i = 0; i < 60; i++) rooms.addChatMessage(room, player, `msg ${i}`);
+  check('chat history keeps only the last 50 messages', () => {
+    assert.equal(room.chat.length, 50);
+    assert.equal(room.chat[0].text, 'msg 10');
+    assert.equal(room.chat[49].text, 'msg 59');
+  });
+  check('sanitizeChatText trims, caps, rejects empty/control-only', () => {
+    assert.equal(rooms.sanitizeChatText('  hi  '), 'hi');
+    assert.equal(rooms.sanitizeChatText('y'.repeat(300)).length, 200);
+    assert.equal(rooms.sanitizeChatText('   '), null);
+    assert.equal(rooms.sanitizeChatText(42), null);
+    assert.equal(rooms.sanitizeChatText('a\u0000b'), 'ab');
+  });
+  rooms.deleteRoom(room.code);
+}
+
 try {
   await socketTests();
   await engineTests();
+  await chatTests();
+  await roomsTests();
 } catch (e) {
   console.error('FATAL', e);
   process.exitCode = 1;

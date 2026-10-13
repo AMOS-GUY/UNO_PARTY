@@ -6,7 +6,7 @@
  * Mute state persists per tab in sessionStorage ('uno-party:muted').
  */
 
-export type SoundName = 'laugh' | 'drumroll' | 'whoosh' | 'click' | 'fanfare';
+export type SoundName = 'laugh' | 'drumroll' | 'whoosh' | 'click' | 'fanfare' | 'pop';
 
 const MUTE_KEY = 'uno-party:muted';
 
@@ -143,12 +143,18 @@ function fanfare(ac: AudioContext): void {
   tone(ac, { freq: 1318.5, type: 'triangle', at: notes.length * 0.14, dur: 0.6, gain: 0.16 });
 }
 
+/** Tiny bubble pop — incoming chat message. */
+function pop(ac: AudioContext): void {
+  tone(ac, { freq: 880, freqEnd: 1320, type: 'sine', dur: 0.07, gain: 0.1 });
+}
+
 const SOUNDS: Record<SoundName, (ac: AudioContext) => void> = {
   laugh,
   drumroll,
   whoosh,
   click,
   fanfare,
+  pop,
 };
 
 /** Play a sound, honoring mute + autoplay policy. Never throws. */
