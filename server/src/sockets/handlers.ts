@@ -5,6 +5,7 @@
  */
 import type { Server, Socket } from 'socket.io';
 import type {
+  Card,
   Color,
   GameStateForClient,
   PlayerPublic,
@@ -71,11 +72,17 @@ function stateFor(room: Room, player: RoomPlayer): GameStateForClient {
       isHost: p.id === room.hostId,
       cardCount: enginePlayer?.hand.length ?? 0,
       hasCalledUno: game?.unoCalled.has(p.id) ?? false,
+      place: enginePlayer?.place ?? null,
     };
   });
   const me = game?.players.find((ep) => ep.id === player.id);
   const isPlaying = room.phase === 'playing' && !!game;
   const isCurrent = !!game && engine.currentPlayer(game).id === player.id;
+  // Spectator reveal: finished players (and only them) see everyone's hand.
+  const spectator = isPlaying && me !== undefined && me.place !== null;
+  const visibleHands: Record<string, Card[]> | null = spectator
+    ? Object.fromEntries(game!.players.map((ep) => [ep.id, ep.hand]))
+    : null;
   return {
     roomCode: room.code,
     phase: room.phase,
@@ -96,6 +103,7 @@ function stateFor(room: Room, player: RoomPlayer): GameStateForClient {
     drawableCardId: isCurrent && game ? game.drawableCardId : null,
     canCatch: isPlaying && game ? engine.canCatch(game, player.id) : false,
     rules: { ...room.rules },
+    visibleHands,
   };
 }
 
@@ -132,13 +140,30 @@ function emitEffects(io: Server, room: Room, effects: Effect[]): void {
       case 'unoCaught':
         io.to(room.code).emit('unoCaught', { targetId: e.targetId, catcherId: e.catcherId });
         break;
-      case 'gameOver':
+      case 'playerFinished':
+        // No dedicated wire event — placements ride on gameState. An info
+        // toast announces the finish to the table.
+        io.to(room.code).emit('toast', {
+          kind: 'info',
+          message: `${playerName(room, e.playerId)} finished #${e.place} 🏆`,
+        });
+        break;
+      case 'gameOver': {
         room.phase = 'finished';
+        const placements = room.players
+          .map((p) => ({
+            playerId: p.id,
+            name: p.name,
+            place: room.game?.players.find((ep) => ep.id === p.id)?.place ?? 0,
+          }))
+          .sort((a, b) => a.place - b.place);
         io.to(room.code).emit('gameOver', {
           winnerId: e.winnerId,
           winnerName: playerName(room, e.winnerId),
+          placements,
         });
         break;
+      }
     }
   }
 }
@@ -338,6 +363,19 @@ export function registerHandlers(io: Server): void {
       });
     });
 
+    socket.on('playAgain', (_payload: unknown, cb?: AckCallback) => {
+      if (!limits.general.tryConsume()) return ackErr(cb, 'Rate limited — slow down');
+      const ctx = rooms.lookupSocket(socket.id);
+      if (!ctx) return ackErr(cb, 'You are not in a room');
+      const { room, player } = ctx;
+      if (room.hostId !== player.id) return ackErr(cb, 'Only the host can restart the game');
+      if (room.phase !== 'finished') return ackErr(cb, 'No finished game to restart');
+      room.game = null;
+      room.phase = 'lobby';
+      ackOk(cb);
+      broadcastState(io, room);
+    });
+
     socket.on('leaveRoom', (_payload: unknown, cb?: AckCallback) => {
       if (!limits.general.tryConsume()) return ackErr(cb, 'Rate limited — slow down');
       const ctx = rooms.lookupSocket(socket.id);
@@ -361,8 +399,10 @@ export function registerHandlers(io: Server): void {
       if (!ctx) return;
       const { room, player } = ctx;
       rooms.handleSocketDrop(room, player);
-      if (room.phase === 'lobby' && room.players.every((p) => !p.connected)) {
-        return; // room was deleted
+      if (room.players.every((p) => !p.connected)) {
+        // Everyone is gone (lobby or mid-game) — clean the room up.
+        rooms.deleteRoom(room.code);
+        return;
       }
       if (room.phase === 'playing' && room.game) {
         engine.handleDisconnect(room.game, player.id);

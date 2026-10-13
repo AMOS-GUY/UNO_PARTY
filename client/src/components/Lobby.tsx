@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import { api, loadSession, saveSession, socket } from '../lib/socket';
 import { useGame } from '../hooks/useGame';
+import { api, loadSession, saveSession, socket } from '../lib/socket';
+import type { HouseRules } from '../shared/protocol';
 import { PlayerAvatar } from './PlayerAvatar';
 import { RuleBadges } from './RuleBadges';
-import type { HouseRules } from '../shared/protocol';
 
 const RULE_OPTIONS: { key: keyof HouseRules; label: string; hint: string }[] = [
   { key: 'stacking', label: '+2/+4 Stacking', hint: 'Stack draw cards and pass the penalty along' },

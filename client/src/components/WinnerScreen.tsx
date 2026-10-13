@@ -1,52 +1,75 @@
 import { useEffect } from 'react';
-import confetti from 'canvas-confetti';
+import { api } from '../lib/socket';
+import { firePodium } from '../lib/celebrate';
 import { useGame } from '../hooks/useGame';
 
-// Full-screen winner overlay with confetti. DOM effects (canvas-confetti)
-// are isolated here so the rest of the app stays portable.
-export function WinnerScreen() {
-  const { gameOver, gameState, leaveAndReset } = useGame();
+const MEDALS = ['🥇', '🥈', '🥉'];
 
-  const isMe = gameOver && gameState && gameOver.winnerId === gameState.myPlayerId;
+// End-of-game podium: full ranking by finish place, last place marked 💀.
+// The host gets Play Again (room resets to lobby, same seats); everyone
+// gets Back to Lobby.
+export function WinnerScreen() {
+  const { gameOver, gameState, leaveAndReset, pushToast } = useGame();
 
   useEffect(() => {
     if (!gameOver) return;
-    const end = Date.now() + 2500;
-    let raf = 0;
-    const frame = () => {
-      confetti({
-        particleCount: 6,
-        angle: 60,
-        spread: 60,
-        origin: { x: 0, y: 0.7 },
-        zIndex: 100,
-      });
-      confetti({
-        particleCount: 6,
-        angle: 120,
-        spread: 60,
-        origin: { x: 1, y: 0.7 },
-        zIndex: 100,
-      });
-      if (Date.now() < end) raf = requestAnimationFrame(frame);
-    };
-    confetti({ particleCount: 180, spread: 100, origin: { y: 0.6 }, zIndex: 100 });
-    raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
+    return firePodium(2500);
   }, [gameOver]);
 
   if (!gameOver) return null;
 
-  const winner = gameState?.players.find((p) => p.id === gameOver.winnerId);
+  const isHost = gameState?.hostId === gameState?.myPlayerId;
+  const placements = [...gameOver.placements].sort((a, b) => a.place - b.place);
+  const lastPlace = placements.length > 0 ? placements[placements.length - 1]!.place : 0;
+
+  async function handlePlayAgain() {
+    const res = await api.playAgain();
+    if (!res.ok) pushToast('error', res.error);
+  }
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
       <div className="animate-pop w-full max-w-sm rounded-3xl bg-neutral-900/95 border border-yellow-300/30 p-8 text-center shadow-2xl">
-        <div className="mb-2 text-6xl">{winner?.avatar ?? '🏆'}</div>
-        <p className="text-sm font-bold uppercase tracking-widest text-yellow-300">
-          {isMe ? '🎉 You win! 🎉' : 'Winner'}
-        </p>
-        <h2 className="mb-6 mt-1 text-4xl font-black">{gameOver.winnerName}</h2>
+        <h2 className="mb-4 text-3xl font-black">🏁 Final Standings</h2>
+        <ol className="mb-6 space-y-2">
+          {placements.map((p) => {
+            const avatar = gameState?.players.find((pl) => pl.id === p.playerId)?.avatar;
+            const isMe = p.playerId === gameState?.myPlayerId;
+            const isLast = p.place === lastPlace && placements.length > 1;
+            return (
+              <li
+                key={p.playerId}
+                className={[
+                  'flex items-center gap-3 rounded-2xl border px-4 py-2.5',
+                  p.place === 1
+                    ? 'border-yellow-300/50 bg-yellow-300/10'
+                    : 'border-white/10 bg-white/5',
+                ].join(' ')}
+              >
+                <span className="w-8 text-2xl">
+                  {isLast ? '💀' : (MEDALS[p.place - 1] ?? `#${p.place}`)}
+                </span>
+                <span className="text-xl">{avatar}</span>
+                <span className="flex-1 truncate text-left font-bold">
+                  {p.name}
+                  {isMe && <span className="ml-1 text-xs text-yellow-300">(you)</span>}
+                </span>
+                <span className="text-xs font-semibold text-white/50">
+                  {isLast ? 'Last' : `#${p.place}`}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+        {isHost && (
+          <button
+            type="button"
+            onClick={() => void handlePlayAgain()}
+            className="mb-3 w-full rounded-2xl bg-gradient-to-b from-green-500 to-green-700 py-3.5 text-lg font-black shadow-lg transition active:scale-95"
+          >
+            🔁 Play Again
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void leaveAndReset()}

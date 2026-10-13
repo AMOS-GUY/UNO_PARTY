@@ -155,6 +155,11 @@ async function socketTests() {
     const raw = JSON.stringify(sA);
     for (const c of sB.myHand) assert.ok(!raw.includes(`"${c.id}"`));
   });
+  check('visibleHands is null for active players (spectator-only reveal)', () => {
+    assert.equal(sA.visibleHands, null);
+    assert.equal(sB.visibleHands, null);
+    assert.ok(sA.players.every((p) => p.place === null));
+  });
 
   const rulesMidGame = await emitAck(a, 'updateRules', { rules: { jumpIn: true } });
   check('updateRules mid-game rejected (locked)', () => assert.equal(rulesMidGame.ok, false));
@@ -476,7 +481,7 @@ async function engineTests() {
     });
   }
 
-  // --- winning ends the game immediately ---
+  // --- finishing: places assigned, game ends when one active player remains ---
   {
     const s = mkState();
     s.players[0].hand = [card('a', 'red', '5')];
@@ -484,14 +489,146 @@ async function engineTests() {
     s.activeColor = 'red';
     s.currentIndex = 0;
     const r = engine.playCard(s, 'p1', 'a');
-    check('playing last card wins immediately, no unoPending', () => {
+    check('2p: playing last card → place 1, other player auto last place, game over', () => {
       assert.equal(r.ok, true);
-      assert.equal(s.winnerId, 'p1');
+      assert.equal(s.players[0].place, 1);
+      assert.equal(s.players[1].place, 2);
+      assert.equal(s.winnerId, 'p1'); // 1st-place player
       assert.equal(s.unoPending, null);
       assert.ok(r.effects.some((e) => e.type === 'gameOver' && e.winnerId === 'p1'));
+      assert.ok(r.effects.some((e) => e.type === 'playerFinished' && e.playerId === 'p1' && e.place === 1));
+      assert.ok(r.effects.some((e) => e.type === 'playerFinished' && e.playerId === 'p2' && e.place === 2));
     });
     const after = engine.playCard(s, 'p1', 'a');
     check('no actions after game over', () => assert.equal(after.ok, false));
+  }
+
+  // --- 3 players: first finisher spectates, game continues, turn skips them ---
+  {
+    const s = mkState(undefined, ['p1', 'p2', 'p3']);
+    s.players[0].hand = [card('a', 'red', '5')];
+    s.players[1].hand = [card('b', 'blue', '6'), card('b2', 'green', '6')];
+    s.players[2].hand = [card('c', 'green', '1'), card('c2', 'yellow', '2')];
+    s.discardPile = [card('t', 'red', '9')];
+    s.activeColor = 'red';
+    s.currentIndex = 0;
+    const r = engine.playCard(s, 'p1', 'a');
+    check('3p: first finisher gets place 1, game continues', () => {
+      assert.equal(r.ok, true);
+      assert.equal(s.players[0].place, 1);
+      assert.equal(s.winnerId, null);
+      assert.equal(s.players[1].place, null);
+    });
+    check('turn passes to next ACTIVE player (p2), skipping the finisher later', () => {
+      assert.equal(s.players[s.currentIndex].id, 'p2');
+    });
+    // p2 passes the turn to p3, and p3's turn wraps past finished p1 to p2
+    engine.drawCard(s, 'p2');
+    engine.passTurn(s, 'p2');
+    assert.equal(s.players[s.currentIndex].id, 'p3');
+    engine.drawCard(s, 'p3');
+    engine.passTurn(s, 'p3');
+    check('rotation wraps past the finished seat (p3 → p2, never p1)', () => {
+      assert.equal(s.players[s.currentIndex].id, 'p2');
+    });
+  }
+
+  // --- Reverse never resurrects a finished seat ---
+  {
+    const s = mkState(undefined, ['p1', 'p2', 'p3']);
+    s.players[0].hand = []; // pretend p1 already finished
+    s.players[0].place = 1;
+    s.nextPlace = 2;
+    s.players[1].hand = [card('b', 'red', 'reverse'), card('b2', 'blue', '6')];
+    s.players[2].hand = [card('c', 'green', '1')];
+    s.discardPile = [card('t', 'red', '9')];
+    s.activeColor = 'red';
+    s.currentIndex = 1; // p2's turn
+    s.direction = 1;
+    const r = engine.playCard(s, 'p2', 'b');
+    check('reverse with 2 active players acts as skip (turn stays on p2)', () => {
+      assert.equal(r.ok, true);
+      assert.equal(s.direction, -1);
+      assert.equal(s.players[s.currentIndex].id, 'p2');
+    });
+    // now p2 passes to p3 (direction -1 wraps: p2 → p1 seat skipped → p3)
+    engine.drawCard(s, 'p2');
+    engine.passTurn(s, 'p2');
+    check('after reverse, rotation still skips the finished seat', () => {
+      assert.equal(s.players[s.currentIndex].id, 'p3');
+    });
+  }
+
+  // --- pending stack from a finishing player lands on the next ACTIVE player ---
+  {
+    const s = mkState(undefined, ['p1', 'p2', 'p3']);
+    s.players[0].hand = [card('a', 'red', 'draw2')];
+    s.players[1].hand = [card('b', 'blue', '6'), card('b2', 'blue', '7')];
+    s.players[2].hand = [card('c', 'green', '1'), card('c2', 'green', '2')];
+    s.discardPile = [card('t', 'red', '9')];
+    s.activeColor = 'red';
+    s.currentIndex = 0;
+    const r = engine.playCard(s, 'p1', 'a');
+    check('finisher played draw2: stack pending on next active player', () => {
+      assert.equal(r.ok, true);
+      assert.equal(s.players[0].place, 1);
+      assert.deepEqual(s.drawStack, { amount: 2, kind: 'draw2' });
+      assert.equal(s.players[s.currentIndex].id, 'p2');
+    });
+    const before = s.players[1].hand.length;
+    const d = engine.drawCard(s, 'p2');
+    check('next active player eats the finisher’s stack', () => {
+      assert.equal(d.ok, true);
+      assert.equal(s.players[1].hand.length, before + 2);
+      assert.equal(s.drawStack, null);
+    });
+  }
+
+  // --- finished players are out of bounds for house rules and catching ---
+  {
+    const s = mkState({ stacking: true, sevenZero: true, jumpIn: true }, ['p1', 'p2', 'p3']);
+    s.players[0].hand = [];
+    s.players[0].place = 1;
+    s.nextPlace = 2;
+    s.players[1].hand = [card('b', 'red', '7'), card('b2', 'blue', '9')];
+    s.players[2].hand = [card('c', 'red', '9'), card('c2', 'green', '2')];
+    s.discardPile = [card('t', 'red', '9')];
+    s.activeColor = 'red';
+    s.currentIndex = 1; // p2's turn
+    let r = engine.playCard(s, 'p2', 'b', undefined, 'p1');
+    check('7-0: swapping with a finished player rejected', () => assert.equal(r.ok, false));
+    r = engine.playCard(s, 'p1', 'nope');
+    check('jumpIn: finished player cannot jump in', () => assert.equal(r.ok, false));
+    // finished player cannot catch, and cannot be caught
+    s.unoPending = { playerId: 'p3', deadline: Date.now() - 1 };
+    r = engine.catchPlayer(s, 'p1', 'p3');
+    check('spectator cannot use Caught!', () => assert.equal(r.ok, false));
+    check('canCatch is false for spectators', () => assert.equal(engine.canCatch(s, 'p1'), false));
+    s.unoPending = { playerId: 'p1', deadline: Date.now() - 1 };
+    r = engine.catchPlayer(s, 'p2', 'p1');
+    check('finished player cannot be caught', () => assert.equal(r.ok, false));
+    s.unoPending = null;
+  }
+
+  // --- game ends when the second-to-last player finishes ---
+  {
+    const s = mkState(undefined, ['p1', 'p2', 'p3']);
+    s.players[0].hand = [];
+    s.players[0].place = 1;
+    s.nextPlace = 2;
+    s.players[1].hand = [card('b', 'red', '5')];
+    s.players[2].hand = [card('c', 'green', '1'), card('c2', 'green', '2')];
+    s.discardPile = [card('t', 'red', '9')];
+    s.activeColor = 'red';
+    s.currentIndex = 1;
+    const r = engine.playCard(s, 'p2', 'b');
+    check('second-to-last finisher ends the game; last place auto-assigned', () => {
+      assert.equal(r.ok, true);
+      assert.equal(s.players[1].place, 2);
+      assert.equal(s.players[2].place, 3); // last place, cards in hand
+      assert.equal(s.winnerId, 'p1');
+      assert.ok(r.effects.some((e) => e.type === 'gameOver' && e.winnerId === 'p1'));
+    });
   }
 
   // --- free draw: once per turn, only drawn card playable ---

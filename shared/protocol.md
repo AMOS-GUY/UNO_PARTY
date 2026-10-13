@@ -31,6 +31,7 @@ interface PlayerPublic {
   isHost: boolean;
   cardCount: number;
   hasCalledUno: boolean; // true while player sits on 1 card having called UNO
+  place: number | null;  // null = still playing; 1 = first to finish, etc.
 }
 
 type RoomPhase = 'lobby' | 'playing' | 'finished';
@@ -60,6 +61,9 @@ interface GameStateForClient {
   drawableCardId: string | null;
   canCatch: boolean; // convenience: true for me if I may use the "Caught!" button now
   rules: HouseRules; // the room's house-rule configuration
+  // Spectator reveal: ONLY sent to finished players (place !== null) — maps
+  // playerId → that player's hand, face-up. Always null for active players.
+  visibleHands: Record<string, Card[]> | null;
 }
 
 interface HouseRules {
@@ -102,7 +106,8 @@ All mutating events take an ack callback `(res: Ack) => void` where
 | `emojiEffect` | `{ playerId: string, emoji: string, kind: 'reaction' \| 'penalty' \| 'skip' \| 'reverse' }` | Big emoji over avatar (~2s). 😂 on +2/+4 hit, 😜 on skip, 🔄 on reverse, player reactions float up. |
 | `unoCalled` | `{ playerId: string }` | Screen shake + "UNO!" banner for everyone. |
 | `unoCaught` | `{ targetId: string, catcherId: string }` | Target drew 2 penalty cards. |
-| `gameOver` | `{ winnerId: string, winnerName: string }` | Winner screen + confetti. |
+| `gameOver` | `{ winnerId: string, winnerName: string, placements: { playerId: string, name: string, place: number }[] }` | Podium screen. `winnerId`/`winnerName` = the 1st-place player; `placements` is the full ranking (last place included). |
+| `playAgain` (C→S) | `{}` | Host only, phase must be `finished`. Resets the room to `lobby` with the same players/seats; broadcast via `gameState`. |
 | `playerPresence` | `{ playerId: string, connected: boolean }` | Away/back indicator. |
 
 ## Rules summary implemented server-side
@@ -114,7 +119,7 @@ All mutating events take an ack callback `(res: Ack) => void` where
 - Direction reverses on reverse (with 2 players, reverse acts as skip).
 - Skip skips next player.
 - UNO: when a player reaches 1 card, server opens a 3s window (`unoPending`). `callUno` clears it. After deadline, anyone may `catchPlayer` → target draws 2, window closes.
-- Winner: first to play their last card (must still survive the UNO catch window — keep simple: winning immediately ends the game; a caught player with 1 card just draws 2 and game continues).
+- Winner: NO instant win. Playing your last card assigns your finishing place (1st, 2nd, …); you become a spectator (keep seat + place, hold no cards, removed from turn order). The game ends when exactly one active player remains — they get last place automatically. Turn rotation skips finished seats (Reverse flips direction but never resurrects them). A pending +2/+4 stack from a finishing player lands on the next ACTIVE player. Finished players cannot be caught, swapped with (7-0), or jump in.
 - Disconnect: player marked `connected: false`, turn skipped if it was theirs (auto-pass after draw... simplest: if current player disconnects, advance turn without draw). Rejoin via `rejoinRoom` restores seat.
 
 ## House rules (all enforced engine-side in `server/src/game/`)

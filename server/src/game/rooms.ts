@@ -69,6 +69,10 @@ export function getRoom(code: string): Room | undefined {
   return rooms.get(code.toUpperCase());
 }
 
+export function deleteRoom(code: string): void {
+  rooms.delete(code);
+}
+
 export function lookupSocket(socketId: string): { room: Room; player: RoomPlayer } | undefined {
   const hit = socketIndex.get(socketId);
   if (!hit) return undefined;
@@ -184,11 +188,12 @@ export type LeaveResult =
   | { error: string };
 
 /**
- * Explicit leaveRoom: in the lobby the seat is removed; mid-game the player
- * is marked disconnected (their hand stays, they could rejoin).
+ * Explicit leaveRoom: in the lobby (or after the game finished) the seat is
+ * removed; mid-game the player is marked disconnected (their hand stays,
+ * they could rejoin).
  */
 export function leaveRoom(room: Room, player: RoomPlayer): LeaveResult {
-  if (room.phase === 'lobby') {
+  if (room.phase === 'lobby' || room.phase === 'finished') {
     room.players = room.players.filter((p) => p.id !== player.id);
     if (room.players.length === 0) {
       rooms.delete(room.code);

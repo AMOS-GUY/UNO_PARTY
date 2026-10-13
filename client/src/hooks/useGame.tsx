@@ -30,6 +30,7 @@ import {
   socket,
 } from '../lib/socket';
 import { initSoundUnlock, playSound } from '../lib/sound';
+import { fireFinish } from '../lib/celebrate';
 
 export interface Toast extends ToastEvent {
   id: number;
@@ -126,7 +127,18 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
     };
     const onDisconnect = () => setConnected(false);
-    const onGameState = (state: GameStateForClient) => setGameState(state);
+    const onGameState = (state: GameStateForClient) => {
+      // Celebrate my own finish exactly once (place transitions null → N).
+      const prevMe = gameStateRef.current?.players.find((p) => p.id === state.myPlayerId);
+      const nextMe = state.players.find((p) => p.id === state.myPlayerId);
+      if (prevMe && prevMe.place === null && nextMe && nextMe.place !== null) {
+        fireFinish();
+        playSound('fanfare');
+      }
+      // Play Again resets the room to the lobby — drop any podium overlay.
+      if (state.phase === 'lobby') setGameOver(null);
+      setGameState(state);
+    };
     const onToast = (t: ToastEvent) => {
       pushToast(t.kind, t.message);
       // Protocol: error toasts imply shaking the last attempted card.

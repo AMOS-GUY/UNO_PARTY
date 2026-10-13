@@ -38,6 +38,14 @@ export function PlayerAvatar({
             👑
           </span>
         )}
+        {player.place !== null && (
+          <span
+            className="absolute -top-2.5 -left-1.5 text-base drop-shadow"
+            title={`Finished #${player.place}`}
+          >
+            {player.place === 1 ? '🥇' : player.place === 2 ? '🥈' : player.place === 3 ? '🥉' : `#${player.place}`}
+          </span>
+        )}
         {cardCountBadge && player.cardCount > 0 && (
           <span className="absolute -bottom-1.5 -right-1.5 rounded-full bg-red-700 border border-white/50 px-1.5 text-[0.65rem] font-bold leading-4">
             {player.cardCount}

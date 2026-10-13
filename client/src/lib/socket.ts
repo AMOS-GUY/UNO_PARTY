@@ -66,6 +66,7 @@ export const api = {
   drawCard: () => emitAck('drawCard'),
   passTurn: () => emitAck('passTurn'),
   callUno: () => emitAck('callUno'),
+  playAgain: () => emitAck('playAgain'),
   catchPlayer: (targetId: string) =>
     emitAck('catchPlayer', { targetId } satisfies CatchPlayerPayload),
   sendReaction: (emoji: string) =>

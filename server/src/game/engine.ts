@@ -20,6 +20,8 @@ export interface EnginePlayer {
   id: string;
   connected: boolean;
   hand: Card[];
+  /** null = still playing; 1 = first to finish, 2 = second, … */
+  place: number | null;
 }
 
 export interface GameState {
@@ -39,7 +41,10 @@ export interface GameState {
   drewThisTurn: boolean;
   /** The card drawn via free draw — the only card that may now be played. */
   drawableCardId: string | null;
+  /** Set when the game ends: the 1st-place player's id. */
   winnerId: string | null;
+  /** Next finishing place to award (1, 2, 3, …). */
+  nextPlace: number;
   /** The room's house-rule configuration, fixed at game start. */
   rules: HouseRules;
 }
@@ -49,6 +54,7 @@ export type Effect =
   | { type: 'cardDrawn'; playerId: string; count: number }
   | { type: 'emoji'; playerId: string; emoji: string; kind: EmojiEffectPayload['kind'] }
   | { type: 'unoCaught'; targetId: string; catcherId: string }
+  | { type: 'playerFinished'; playerId: string; place: number }
   | { type: 'gameOver'; winnerId: string };
 
 export type Result = { ok: true; effects: Effect[] } | { ok: false; error: string };
@@ -80,15 +86,21 @@ export function canPlay(state: GameState, card: Card): boolean {
   return card.color === state.activeColor || card.value === top.value;
 }
 
-/** One step in the current direction, skipping disconnected players. */
+/** One step in the current direction, skipping finished and disconnected players. */
 function stepOnce(state: GameState, from: number): number {
   const n = state.players.length;
   let i = from;
   for (let k = 0; k < n; k++) {
     i = (((i + state.direction) % n) + n) % n;
-    if (state.players[i]!.connected) return i;
+    const p = state.players[i]!;
+    if (p.connected && p.place === null) return i;
   }
-  return from; // nobody else connected: keep the turn here
+  return from; // nobody else active: keep the turn here
+}
+
+/** Players still in the game (not finished), regardless of connection. */
+export function activePlayers(state: GameState): EnginePlayer[] {
+  return state.players.filter((p) => p.place === null);
 }
 
 function advance(state: GameState, steps: number): void {
@@ -145,7 +157,7 @@ export function createGame(
   rules: HouseRules,
 ): { state: GameState; effects: Effect[] } {
   const state: GameState = {
-    players: players.map((p) => ({ id: p.id, connected: p.connected, hand: [] })),
+    players: players.map((p) => ({ id: p.id, connected: p.connected, hand: [], place: null })),
     drawPile: shuffle(buildDecks(deckCount)),
     discardPile: [],
     activeColor: 'red', // overwritten by the initial flip
@@ -157,6 +169,7 @@ export function createGame(
     drewThisTurn: false,
     drawableCardId: null,
     winnerId: null,
+    nextPlace: 1,
     rules,
   };
   const effects: Effect[] = [];
@@ -223,7 +236,7 @@ export function playCard(
   if (player.id !== playerId) {
     if (!state.rules.jumpIn) return err('Not your turn');
     const jumper = findPlayer(state, playerId);
-    if (!jumper || !jumper.connected) return err('Not your turn');
+    if (!jumper || !jumper.connected || jumper.place !== null) return err('Not your turn');
     const card = jumper.hand.find((c) => c.id === cardId);
     if (!card) return err("You don't have that card");
     const top = topCard(state);
@@ -266,6 +279,7 @@ export function playCard(
     if (swapTargetId === playerId) return err('You cannot swap hands with yourself');
     swapTarget = findPlayer(state, swapTargetId) ?? null;
     if (!swapTarget) return err('No such player to swap with');
+    if (swapTarget.place !== null) return err('That player has already finished — no hand to swap');
   }
 
   player.hand.splice(cardIndex, 1);
@@ -274,21 +288,36 @@ export function playCard(
 
   const effects: Effect[] = [{ type: 'cardPlayed', playerId, card, chosenColor }];
 
-  // Winning ends the game immediately — no card effects apply.
+  // Emptying your hand does NOT end the game: you take your finishing place
+  // and spectate. The game ends only when one active player remains.
   if (player.hand.length === 0) {
-    state.winnerId = playerId;
-    state.unoPending = null;
+    player.place = state.nextPlace++;
+    if (state.unoPending?.playerId === playerId) state.unoPending = null;
     state.unoCalled.delete(playerId);
-    effects.push({ type: 'gameOver', winnerId: playerId });
-    return ok(effects);
+    effects.push({ type: 'playerFinished', playerId, place: player.place });
+
+    const remaining = activePlayers(state);
+    if (remaining.length === 1) {
+      // Last player standing gets last place automatically.
+      remaining[0]!.place = state.nextPlace++;
+      const first = state.players.find((p) => p.place === 1)!;
+      state.winnerId = first.id;
+      effects.push({ type: 'playerFinished', playerId: remaining[0]!.id, place: remaining[0]!.place });
+      effects.push({ type: 'gameOver', winnerId: first.id });
+      syncUnoState(state);
+      return ok(effects);
+    }
+    // Game continues: fall through and apply the card's effect to the next
+    // ACTIVE player (turn rotation skips finished seats).
   }
 
-  // 7-0 house rule effects apply after the win check.
-  if (state.rules.sevenZero && card.value === '7' && swapTarget) {
+  // 7-0 house rule effects apply only when the player is still in the game
+  // (finishing with a 7 takes the place immediately — no swap).
+  if (player.place === null && state.rules.sevenZero && card.value === '7' && swapTarget) {
     const mine = player.hand;
     player.hand = swapTarget.hand;
     swapTarget.hand = mine;
-  } else if (state.rules.sevenZero && card.value === '0') {
+  } else if (player.place === null && state.rules.sevenZero && card.value === '0') {
     rotateHands(state);
   }
 
@@ -305,8 +334,8 @@ export function playCard(
     case 'reverse':
       state.direction = state.direction === 1 ? -1 : 1;
       effects.push({ type: 'emoji', playerId, emoji: '🔄', kind: 'reverse' });
-      // With exactly 2 players reverse acts as skip.
-      advance(state, state.players.length === 2 ? 2 : 1);
+      // With exactly 2 ACTIVE players reverse acts as skip.
+      advance(state, activePlayers(state).length === 2 ? 2 : 1);
       break;
     case 'draw2':
       if (state.rules.stacking) {
@@ -420,7 +449,9 @@ export function catchPlayer(state: GameState, catcherId: string, targetId: strin
   const catcher = findPlayer(state, catcherId);
   const target = findPlayer(state, targetId);
   if (!catcher) return err('You are not in this game');
+  if (catcher.place !== null) return err('Spectators cannot catch anyone');
   if (!target) return err('No such player');
+  if (target.place !== null) return err('That player has already finished');
   if (!state.unoPending || state.unoPending.playerId !== targetId) {
     return err('That player has no open UNO window');
   }
@@ -461,8 +492,11 @@ export function handleReconnect(state: GameState, playerId: string): void {
 
 /** May `playerId` press the "Caught!" button right now? */
 export function canCatch(state: GameState, playerId: string): boolean {
+  const me = findPlayer(state, playerId);
   return (
     state.winnerId === null &&
+    me !== undefined &&
+    me.place === null && // spectators can't catch
     state.unoPending !== null &&
     state.unoPending.playerId !== playerId &&
     Date.now() >= state.unoPending.deadline

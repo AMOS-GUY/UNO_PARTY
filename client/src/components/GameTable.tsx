@@ -9,6 +9,7 @@ import { MyHand } from './MyHand';
 import { UnoButton } from './UnoButton';
 import { ReactionBar } from './ReactionBar';
 import { RuleBadges } from './RuleBadges';
+import { SpectatorView } from './SpectatorView';
 
 export function GameTable() {
   const { gameState, unoBanner, pushToast, leaveAndReset, connected } = useGame();
@@ -33,6 +34,9 @@ export function GameTable() {
   }, [unoBanner]);
 
   if (!gameState) return null;
+
+  const me = gameState.players.find((p) => p.id === gameState.myPlayerId);
+  const iAmSpectator = gameState.phase === 'playing' && me?.place != null;
 
   async function handlePass() {
     const res = await api.passTurn();
@@ -97,10 +101,10 @@ export function GameTable() {
           <CenterPiles />
         </div>
 
-        {/* controls above the hand */}
+        {/* controls above the hand (spectators keep reactions only) */}
         <div className="relative z-10 flex flex-col items-center gap-2 pb-1">
-          <UnoButton />
-          {canPassTurn(gameState) && (
+          {!iAmSpectator && <UnoButton />}
+          {!iAmSpectator && canPassTurn(gameState) && (
             <button
               type="button"
               onClick={handlePass}
@@ -113,7 +117,7 @@ export function GameTable() {
         </div>
 
         <div className="relative z-10">
-          <MyHand />
+          {iAmSpectator ? <SpectatorView /> : <MyHand />}
         </div>
       </main>
 

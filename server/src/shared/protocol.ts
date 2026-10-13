@@ -24,6 +24,7 @@ export interface PlayerPublic {
   isHost: boolean;
   cardCount: number;
   hasCalledUno: boolean; // true while player sits on 1 card having called UNO
+  place: number | null; // null = still playing; 1 = first to finish, etc.
 }
 
 export type RoomPhase = 'lobby' | 'playing' | 'finished';
@@ -60,6 +61,8 @@ export interface GameStateForClient {
   drawableCardId: string | null;
   canCatch: boolean; // true for me if I may use the "Caught!" button now
   rules: HouseRules; // the room's house-rule configuration
+  /** Spectator reveal: only sent to finished players; maps playerId → hand. */
+  visibleHands: Record<string, Card[]> | null;
 }
 
 // ---- Client -> Server payloads ----
@@ -148,8 +151,9 @@ export interface UnoCaughtPayload {
 }
 
 export interface GameOverPayload {
-  winnerId: string;
+  winnerId: string; // 1st-place player
   winnerName: string;
+  placements: { playerId: string; name: string; place: number }[];
 }
 
 export interface PlayerPresencePayload {
